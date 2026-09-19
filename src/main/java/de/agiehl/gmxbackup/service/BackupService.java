@@ -7,6 +7,7 @@ import de.agiehl.gmxbackup.util.ArchivePaths;
 import jakarta.mail.FetchProfile;
 import jakarta.mail.Folder;
 import jakarta.mail.Message;
+import jakarta.mail.MessagingException;
 import jakarta.mail.Store;
 import jakarta.mail.UIDFolder;
 import org.eclipse.angus.mail.imap.IMAPFolder;
@@ -105,7 +106,6 @@ public class BackupService {
 
     private int backupFolder(Folder folder, Path outputDirectory, List<EmailMetadata> emails) throws Exception {
         var failedMessages = 0;
-        var expungeOnClose = false;
         try {
             var requestedMode = properties.deleteAfterBackup() ? Folder.READ_WRITE : Folder.READ_ONLY;
             folder.open(requestedMode);
@@ -116,9 +116,10 @@ public class BackupService {
             var count = folder.getMessageCount();
             LOGGER.info("Sichere Ordner '{}' mit {} E-Mails", folder.getFullName(), count);
             var folderDirectory = ArchivePaths.folderPath(outputDirectory.resolve("mail"), folder.getFullName(), folder.getSeparator());
-            for (var start = 1; start <= count; start += properties.batchSize()) {
-                var end = Math.min(start + properties.batchSize() - 1, count);
-                var messages = folder.getMessages(start, end);
+            var folderMessages = count == 0 ? new Message[0] : folder.getMessages(1, count);
+            for (var offset = 0; offset < count; offset += properties.batchSize()) {
+                var end = Math.min(offset + properties.batchSize(), count);
+                var messages = Arrays.copyOfRange(folderMessages, offset, end);
                 try {
                     prefetch(folder, messages);
                 } catch (Exception exception) {
@@ -133,8 +134,11 @@ public class BackupService {
                             emails.add(metadata);
                             if (canDelete) {
                                 message.setFlag(jakarta.mail.Flags.Flag.DELETED, true);
-                                expungeOnClose = true;
-                                LOGGER.info("Gesicherte E-Mail '{}' zum Löschen markiert", metadata.subject());
+                                var expunged = expunge(folder, message);
+                                if (expunged == 0) {
+                                    throw new IllegalStateException("Die gesicherte E-Mail konnte nicht endgültig gelöscht werden");
+                                }
+                                LOGGER.info("Gesicherte E-Mail '{}' sofort vom Server gelöscht", metadata.subject());
                             }
                         } catch (Exception exception) {
                             failedMessages++;
@@ -143,19 +147,21 @@ public class BackupService {
                         }
                     }
                 }
-                LOGGER.info("Ordner '{}': {}/{} E-Mails gesichert", folder.getFullName(), end, count);
-            }
-            if (expungeOnClose) {
-                var expunged = folder.expunge().length;
-                expungeOnClose = false;
-                LOGGER.warn("Ordner '{}': {} erfolgreich gesicherte E-Mails vom Server gelöscht", folder.getFullName(), expunged);
+                LOGGER.info("Ordner '{}': {}/{} E-Mails verarbeitet", folder.getFullName(), end, count);
             }
             return failedMessages;
         } finally {
             if (folder.isOpen()) {
-                folder.close(expungeOnClose);
+                folder.close(false);
             }
         }
+    }
+
+    private int expunge(Folder folder, Message message) throws MessagingException {
+        if (folder instanceof IMAPFolder imapFolder) {
+            return imapFolder.expunge(new Message[]{message}).length;
+        }
+        return folder.expunge().length;
     }
 
     private void prefetch(Folder folder, Message[] messages) throws Exception {

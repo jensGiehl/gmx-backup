@@ -14,7 +14,7 @@
     <artifactId>gmx-backup</artifactId>
     <version>1.0.0</version>
     <name>GMX Backup</name>
-    <description>Read-only IMAP backup for GMX mailboxes</description>
+    <description>IMAP archive for GMX mailboxes</description>
 
     <properties>
         <java.version>25</java.version>

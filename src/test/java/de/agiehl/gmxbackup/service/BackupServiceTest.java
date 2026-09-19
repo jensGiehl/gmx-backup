@@ -23,6 +23,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -49,6 +50,7 @@ class BackupServiceTest {
         var folder = mock(Folder.class);
         var failedMessage = mock(Message.class);
         var successfulMessage = mock(Message.class);
+        var secondSuccessfulMessage = mock(Message.class);
 
         when(storeFactory.connect()).thenReturn(store);
         when(store.getDefaultFolder()).thenReturn(root);
@@ -57,28 +59,42 @@ class BackupServiceTest {
         when(folder.getFullName()).thenReturn("INBOX");
         when(folder.getSeparator()).thenReturn('/');
         when(folder.getMode()).thenReturn(Folder.READ_WRITE);
-        when(folder.getMessageCount()).thenReturn(2);
-        when(folder.getMessages(1, 2)).thenReturn(new Message[]{failedMessage, successfulMessage});
-        when(folder.expunge()).thenReturn(new Message[]{successfulMessage});
+        when(folder.getMessageCount()).thenReturn(3);
+        when(folder.getMessages(1, 3)).thenReturn(new Message[]{failedMessage, successfulMessage, secondSuccessfulMessage});
+        when(folder.expunge()).thenReturn(
+                new Message[]{successfulMessage},
+                new Message[]{secondSuccessfulMessage});
         when(folder.isOpen()).thenReturn(true);
         when(failedMessage.isExpunged()).thenReturn(false);
         when(successfulMessage.isExpunged()).thenReturn(false);
+        when(secondSuccessfulMessage.isExpunged()).thenReturn(false);
         when(failedMessage.getMessageNumber()).thenReturn(1);
         when(successfulMessage.getMessageNumber()).thenReturn(2);
+        when(secondSuccessfulMessage.getMessageNumber()).thenReturn(3);
         when(store.isConnected()).thenReturn(true);
         when(writer.write(eq(failedMessage), anyLong(), anyString(), any(Path.class), any(Path.class)))
                 .thenThrow(new IOException("Defekte Nachricht"));
         when(writer.write(eq(successfulMessage), anyLong(), anyString(), any(Path.class), any(Path.class)))
+                .thenReturn(metadata());
+        when(writer.write(eq(secondSuccessfulMessage), anyLong(), anyString(), any(Path.class), any(Path.class)))
                 .thenReturn(metadata());
 
         new BackupService(properties, new FolderFilter(), writer, indexWriter, storeFactory).createBackup();
 
         verify(failedMessage, never()).setFlag(Flags.Flag.DELETED, true);
         verify(successfulMessage).setFlag(Flags.Flag.DELETED, true);
-        verify(folder).expunge();
+        verify(secondSuccessfulMessage).setFlag(Flags.Flag.DELETED, true);
+        verify(folder, org.mockito.Mockito.times(2)).expunge();
+        var deletionOrder = inOrder(writer, successfulMessage, secondSuccessfulMessage, folder);
+        deletionOrder.verify(writer).write(eq(successfulMessage), anyLong(), anyString(), any(Path.class), any(Path.class));
+        deletionOrder.verify(successfulMessage).setFlag(Flags.Flag.DELETED, true);
+        deletionOrder.verify(folder).expunge();
+        deletionOrder.verify(writer).write(eq(secondSuccessfulMessage), anyLong(), anyString(), any(Path.class), any(Path.class));
+        deletionOrder.verify(secondSuccessfulMessage).setFlag(Flags.Flag.DELETED, true);
+        deletionOrder.verify(folder).expunge();
         var catalog = ArgumentCaptor.forClass(BackupCatalog.class);
         verify(indexWriter).write(catalog.capture(), eq(temporaryDirectory.toAbsolutePath().normalize()));
-        assertThat(catalog.getValue().emailCount()).isEqualTo(1);
+        assertThat(catalog.getValue().emailCount()).isEqualTo(2);
         verify(store).close();
     }
 

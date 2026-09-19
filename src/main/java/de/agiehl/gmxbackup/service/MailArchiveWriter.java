@@ -3,7 +3,6 @@ package de.agiehl.gmxbackup.service;
 import de.agiehl.gmxbackup.domain.AttachmentMetadata;
 import de.agiehl.gmxbackup.domain.EmailMetadata;
 import de.agiehl.gmxbackup.util.ArchivePaths;
-import de.agiehl.gmxbackup.util.PathSanitizer;
 import jakarta.mail.Address;
 import jakarta.mail.Flags;
 import jakarta.mail.Message;
@@ -15,19 +14,25 @@ import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 import java.io.IOException;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.DigestOutputStream;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.Arrays;
 import java.util.Date;
+import java.util.HexFormat;
 import java.util.List;
 
 @Component
 public class MailArchiveWriter {
 
-    private static final DateTimeFormatter FILE_DATE = DateTimeFormatter.ofPattern("yyyy-MM-dd_HHmmss");
+    private static final DateTimeFormatter FILE_DATE = DateTimeFormatter.ofPattern("yyyy-MM-dd_HHmmss_SSS");
+    private static final int HASH_LENGTH = 16;
 
     private final MimeContentExtractor contentExtractor;
 
@@ -39,18 +44,25 @@ public class MailArchiveWriter {
             throws MessagingException, IOException {
         Files.createDirectories(folderDirectory);
         var subject = StringUtils.hasText(message.getSubject()) ? message.getSubject() : "Ohne Betreff";
-        var baseName = createBaseName(message, uid, subject);
-        var htmlPath = folderDirectory.resolve(baseName + ".html");
-        var emlPath = folderDirectory.resolve(baseName + ".eml");
-        var assetsPath = folderDirectory.resolve(baseName + "_dateien");
+        var temporaryEml = Files.createTempFile(folderDirectory, ".gmx-backup-", ".eml.tmp");
+        try {
+            var digest = sha256();
+            try (OutputStream output = new DigestOutputStream(Files.newOutputStream(temporaryEml), digest)) {
+                message.writeTo(output);
+            }
+            var baseName = createBaseName(message, digest.digest());
+            var htmlPath = folderDirectory.resolve(baseName + ".html");
+            var emlPath = folderDirectory.resolve(baseName + ".eml");
+            var assetsPath = folderDirectory.resolve(baseName);
 
-        try (var output = Files.newOutputStream(emlPath)) {
-            message.writeTo(output);
+            Files.move(temporaryEml, emlPath, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            var extracted = contentExtractor.extract(message, assetsPath, outputRoot);
+            var metadata = toMetadata(message, uid, folderName, subject, extracted, htmlPath, emlPath, outputRoot);
+            Files.writeString(htmlPath, renderMessage(metadata, extracted.html(), htmlPath, outputRoot), StandardCharsets.UTF_8);
+            return metadata;
+        } finally {
+            Files.deleteIfExists(temporaryEml);
         }
-        var extracted = contentExtractor.extract(message, assetsPath, outputRoot);
-        var metadata = toMetadata(message, uid, folderName, subject, extracted, htmlPath, emlPath, outputRoot);
-        Files.writeString(htmlPath, renderMessage(metadata, extracted.html(), htmlPath, outputRoot), StandardCharsets.UTF_8);
-        return metadata;
     }
 
     private EmailMetadata toMetadata(
@@ -158,12 +170,21 @@ public class MailArchiveWriter {
         return "<section class=\"mail-attachments\"><h2>Anhänge</h2><div class=\"attachment-list\">" + items + "</div></section>";
     }
 
-    private String createBaseName(Message message, long uid, String subject) throws MessagingException {
+    private String createBaseName(Message message, byte[] digest) throws MessagingException {
         var date = message.getReceivedDate() != null ? message.getReceivedDate() : message.getSentDate();
         var datePart = date == null
-                ? "ohne-datum"
+                ? FILE_DATE.format(java.time.Instant.now().atZone(ZoneId.systemDefault()))
                 : FILE_DATE.format(date.toInstant().atZone(ZoneId.systemDefault()));
-        return datePart + "_" + Math.max(uid, message.getMessageNumber()) + "_" + PathSanitizer.fileSegment(subject, "ohne-betreff");
+        var hash = HexFormat.of().formatHex(digest, 0, HASH_LENGTH / 2);
+        return datePart + "_" + hash;
+    }
+
+    private MessageDigest sha256() {
+        try {
+            return MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 ist nicht verfügbar", exception);
+        }
     }
 
     private List<String> addresses(Address[] values) {

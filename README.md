@@ -1,6 +1,6 @@
 # GMX Backup
 
-GMX Backup sichert ein GMX-Postfach ausschließlich lesend über IMAPS. Es durchläuft alle E-Mail-Ordner einschließlich „Gesendet“ und überspringt Spam- sowie Papierkorb-/Gelöscht-Ordner. Für jede Nachricht entstehen:
+GMX Backup archiviert ein GMX-Postfach über IMAPS. Es durchläuft alle E-Mail-Ordner einschließlich „Gesendet“, überspringt Spam- sowie Papierkorb-/Gelöscht-Ordner und löscht jede erfolgreich gespeicherte Nachricht sofort vom GMX-Server. Für jede Nachricht entstehen:
 
 - eine bereinigte, offline lesbare HTML-Ansicht,
 - die unveränderte Originalnachricht als `.eml`,
@@ -75,13 +75,13 @@ Nach erfolgreichem Abschluss kann `backup/index.html` im Browser geöffnet werde
 | `backup.connection-timeout` | `30s` | Zeitlimit für den Verbindungsaufbau |
 | `backup.read-timeout` | `60s` | Zeitlimit für IMAP-Lesevorgänge |
 | `backup.delete-all` | `false` | Löscht statt einer Sicherung sämtliche E-Mails endgültig |
-| `backup.delete-after-backup` | `false` | Löscht jede erfolgreich gesicherte E-Mail anschließend vom Server |
+| `backup.delete-after-backup` | `true` | Löscht jede erfolgreich gesicherte E-Mail sofort und endgültig vom Server; mit `false` bleibt sie erhalten |
 
 Spring Boot akzeptiert die Werte sowohl als Kommandozeilenargumente als auch in der üblichen Umgebungsvariablen-Schreibweise, etwa `BACKUP_GMX_HOST`.
 
 ## Ergebnisstruktur
 
-Die Ordnerhierarchie des Postfachs bleibt unter `mail/` erhalten. Dateinamen werden lediglich so bereinigt, dass sie auch unter Windows gültig sind.
+Die Ordnerhierarchie des Postfachs bleibt unter `mail/` erhalten. Jede E-Mail erhält einen Basisnamen aus lokalem Datum, Zeitstempel mit Millisekunden und den ersten 16 Hexadezimalzeichen ihres SHA-256-Inhaltshashs. Derselbe Basisname wird für die `.html`-Datei, die `.eml`-Datei und den Ordner mit Anhängen verwendet.
 
 ```text
 backup/
@@ -95,9 +95,9 @@ backup/
 │   └── bootstrap.bundle.min.js
 └── mail/
     ├── INBOX/
-    │   ├── 2026-09-18_143000_123_Betreff.html
-    │   ├── 2026-09-18_143000_123_Betreff.eml
-    │   └── 2026-09-18_143000_123_Betreff_dateien/
+    │   ├── 2026-09-18_143000_123_a1b2c3d4e5f60718.html
+    │   ├── 2026-09-18_143000_123_a1b2c3d4e5f60718.eml
+    │   └── 2026-09-18_143000_123_a1b2c3d4e5f60718/
     │       ├── bild.png
     │       └── rechnung.pdf
     ├── Gesendet/
@@ -111,7 +111,7 @@ backup/
 
 ## Sicherheits- und Backup-Verhalten
 
-- IMAP-Ordner werden mit `Folder.READ_ONLY` geöffnet.
+- IMAP-Ordner werden standardmäßig mit `Folder.READ_WRITE` geöffnet, damit erfolgreich archivierte Nachrichten sofort gelöscht werden können. Mit `backup.delete-after-backup=false` erfolgt der Zugriff über `Folder.READ_ONLY`.
 - Die IMAP-Peek-Option verhindert, dass Nachrichten durch das Sichern als gelesen markiert werden.
 - Es wird ausschließlich IMAPS über TLS verwendet; SMTP ist nicht enthalten.
 - Spam/Junk und Papierkorb/Gelöscht werden anhand der IMAP-Systemattribute sowie üblicher deutscher und englischer Ordnernamen ausgeschlossen.
@@ -121,29 +121,36 @@ backup/
 - Fehlerhafte MIME-Teile oder Anhänge werden protokolliert und übersprungen, ohne den gesamten Sicherungslauf abzubrechen. Die originale `.eml` enthält weiterhin die unveränderte Nachricht.
 - Fehler einer einzelnen E-Mail oder eines einzelnen Ordners werden protokolliert; danach wird mit dem nächsten Element fortgefahren.
 
-Ein erneuter Lauf überschreibt Dateien derselben IMAP-UID deterministisch, löscht aber keine bereits vorhandenen Sicherungsdateien. Damit entfernt eine serverseitig gelöschte Nachricht nicht automatisch ihre frühere lokale Kopie.
+Ein erneuter Lauf derselben Nachricht verwendet aufgrund des Inhaltshashs wieder denselben Dateinamen, löscht aber keine anderen bereits vorhandenen Sicherungsdateien.
 
 Das Backup enthält vertrauliche Daten im Klartext. Das Zielverzeichnis sollte auf einem verschlüsselten Datenträger liegen und nur für den eigenen Benutzer lesbar sein.
 
 ## Nach erfolgreicher Sicherung löschen
 
-Mit `--backup.delete-after-backup=true` wird jede E-Mail unmittelbar nach ihrer erfolgreichen lokalen Sicherung auf dem GMX-Server zum Löschen markiert. Nach Abschluss des jeweiligen Ordners werden die markierten Nachrichten endgültig entfernt.
+`backup.delete-after-backup` ist standardmäßig aktiviert. Jede E-Mail wird unmittelbar nach ihrer erfolgreichen lokalen Sicherung markiert und sofort endgültig vom GMX-Server entfernt. Es wird nicht bis zum Ende des Ordners oder des gesamten Laufs gewartet.
 
 ```cmd
 set "BACKUP_GMX_EMAIL=max.mustermann@gmx.de"
 set "BACKUP_GMX_PASSWORD=MEIN_PASSWORT"
-mvn spring-boot:run "-Dspring-boot.run.arguments=--backup.delete-after-backup=true"
+mvn spring-boot:run
 ```
 
 Dabei gelten folgende Sicherheitsregeln:
 
 - Eine E-Mail wird nur gelöscht, wenn ihre `.eml`-Datei, HTML-Ansicht und Metadaten erfolgreich erzeugt wurden.
+- Die endgültige Löschung erfolgt vor der Verarbeitung der nächsten E-Mail.
 - Kann eine E-Mail nicht gesichert werden, bleibt sie auf dem Server erhalten und der Lauf fährt mit der nächsten Nachricht fort.
 - Ein fehlerhafter einzelner Anhang wird in der HTML-Ansicht übersprungen. Da die unveränderte `.eml` bereits gesichert wurde und den ursprünglichen MIME-Inhalt enthält, gilt die E-Mail dennoch als vollständig archiviert.
 - Spam und „Gelöscht“ werden wie beim normalen Backup nicht verarbeitet und daher auch nicht gelöscht.
 - Kann ein Ordner nur lesend geöffnet werden, wird er gesichert, aber nicht gelöscht.
 
-`backup.delete-after-backup` und `backup.delete-all` dürfen nicht gleichzeitig aktiviert werden.
+Bei `backup.delete-all=true` hat der vollständige Löschmodus Vorrang; in diesem Fall wird unabhängig von `backup.delete-after-backup` kein Backup erstellt.
+
+Für einen rein lesenden Archivlauf muss die Löschung ausdrücklich deaktiviert werden:
+
+```bash
+mvn spring-boot:run -Dspring-boot.run.arguments="--backup.delete-after-backup=false"
+```
 
 ## Optionaler Löschmodus
 
@@ -192,7 +199,7 @@ docker run -d \
   -p 8089:8080 \
   -e BACKUP_GMX_EMAIL=max.mustermann@gmx.de \
   -e BACKUP_GMX_PASSWORD=MEIN_PASSWORT \
-  -e BACKUP_DELETE_AFTER_BACKUP=false \
+  -e BACKUP_DELETE_AFTER_BACKUP=true \
   -v gmx-backup-data:/app/backup \
   ghcr.io/jensgiehl/gmx-backup:latest
 ```
@@ -236,7 +243,7 @@ Empfohlen wird deshalb eine Env-Datei. In dieser werden `+` und `$` unverändert
 ```dotenv
 BACKUP_GMX_EMAIL=max.mustermann@gmx.de
 BACKUP_GMX_PASSWORD=mein+pass$wort
-BACKUP_DELETE_AFTER_BACKUP=false
+BACKUP_DELETE_AFTER_BACKUP=true
 ```
 
 Die Datei kann beispielsweise als `gmx-backup.env` gespeichert werden. Unter Linux sollten die Zugriffsrechte vor dem Start eingeschränkt werden:
