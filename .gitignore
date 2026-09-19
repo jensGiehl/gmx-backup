@@ -1,5 +1,6 @@
 target/
 /backup/
+/_backup/
 .idea/
 *.iml
 .vscode/

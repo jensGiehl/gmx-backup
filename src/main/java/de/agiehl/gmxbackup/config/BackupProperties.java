@@ -13,7 +13,9 @@ public record BackupProperties(
         @DefaultValue("backup") Path outputDirectory,
         @DefaultValue("100") int batchSize,
         @DefaultValue("30s") Duration connectionTimeout,
-        @DefaultValue("60s") Duration readTimeout) {
+        @DefaultValue("60s") Duration readTimeout,
+        @DefaultValue("false") boolean deleteAll,
+        @DefaultValue("false") boolean deleteAfterBackup) {
 
     public BackupProperties {
         gmx = gmx == null ? new Gmx(null, null, "imap.gmx.net", 993) : gmx;
@@ -28,6 +30,9 @@ public record BackupProperties(
         }
         if (batchSize < 1 || batchSize > 1_000) {
             throw new IllegalArgumentException("backup.batch-size muss zwischen 1 und 1000 liegen");
+        }
+        if (deleteAll && deleteAfterBackup) {
+            throw new IllegalArgumentException("backup.delete-all und backup.delete-after-backup dürfen nicht gleichzeitig aktiviert sein");
         }
     }
 

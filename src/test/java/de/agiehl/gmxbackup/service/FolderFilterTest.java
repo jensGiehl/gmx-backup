@@ -21,4 +21,11 @@ class FolderFilterTest {
         assertThat(filter.shouldInclude("Bin", new String[]{"\\Trash"})).isFalse();
         assertThat(filter.shouldInclude("Unwanted", new String[]{"\\Junk"})).isFalse();
     }
+
+    @Test
+    void identifiesTrashSeparatelyForDeletionOrdering() {
+        assertThat(filter.isTrash("Gelöscht", new String[0])).isTrue();
+        assertThat(filter.isTrash("Bin", new String[]{"\\Trash"})).isTrue();
+        assertThat(filter.isTrash("Spamverdacht", new String[0])).isFalse();
+    }
 }

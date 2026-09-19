@@ -2,6 +2,7 @@ package de.agiehl.gmxbackup;
 
 import de.agiehl.gmxbackup.config.BackupProperties;
 import de.agiehl.gmxbackup.service.BackupService;
+import de.agiehl.gmxbackup.service.MailboxDeletionService;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.SpringApplication;
@@ -14,10 +15,15 @@ public class GmxBackupApplication implements ApplicationRunner {
 
     private final BackupProperties properties;
     private final BackupService backupService;
+    private final MailboxDeletionService mailboxDeletionService;
 
-    public GmxBackupApplication(BackupProperties properties, BackupService backupService) {
+    public GmxBackupApplication(
+            BackupProperties properties,
+            BackupService backupService,
+            MailboxDeletionService mailboxDeletionService) {
         this.properties = properties;
         this.backupService = backupService;
+        this.mailboxDeletionService = mailboxDeletionService;
     }
 
     public static void main(String[] args) {
@@ -27,6 +33,10 @@ public class GmxBackupApplication implements ApplicationRunner {
     @Override
     public void run(ApplicationArguments args) throws Exception {
         properties.validate();
-        backupService.createBackup();
+        if (properties.deleteAll()) {
+            mailboxDeletionService.deleteAllEmails();
+        } else {
+            backupService.createBackup();
+        }
     }
 }

@@ -10,19 +10,30 @@ import java.util.Set;
 @Component
 public class FolderFilter {
 
-    private static final Set<String> EXCLUDED_NAMES = Set.of(
-            "spam", "junk", "spamverdacht", "trash", "deleted", "deleted messages", "geloscht", "papierkorb");
-
     public boolean shouldInclude(String fullName, String[] attributes) {
-        var systemFolder = Arrays.stream(attributes == null ? new String[0] : attributes)
+        return !isTrash(fullName, attributes) && !isSpam(fullName, attributes);
+    }
+
+    public boolean isTrash(String fullName, String[] attributes) {
+        return hasAttribute(attributes, "\\trash") || normalizedSegments(fullName)
+                .anyMatch(Set.of("trash", "deleted", "deleted messages", "geloscht", "papierkorb")::contains);
+    }
+
+    public boolean isSpam(String fullName, String[] attributes) {
+        return hasAttribute(attributes, "\\junk") || normalizedSegments(fullName)
+                .anyMatch(Set.of("spam", "junk", "spamverdacht")::contains);
+    }
+
+    private boolean hasAttribute(String[] attributes, String expected) {
+        return Arrays.stream(attributes == null ? new String[0] : attributes)
                 .map(value -> value.toLowerCase(Locale.ROOT))
-                .anyMatch(value -> value.equals("\\trash") || value.equals("\\junk"));
-        if (systemFolder) {
-            return false;
-        }
+                .anyMatch(expected::equals);
+    }
+
+    private java.util.stream.Stream<String> normalizedSegments(String fullName) {
         return Arrays.stream(fullName.split("[/\\\\]"))
                 .map(this::normalize)
-                .noneMatch(EXCLUDED_NAMES::contains);
+                .filter(value -> !value.isBlank());
     }
 
     private String normalize(String value) {

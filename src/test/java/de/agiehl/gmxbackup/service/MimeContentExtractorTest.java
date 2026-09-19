@@ -46,6 +46,13 @@ class MimeContentExtractorTest {
         attachment.setDisposition(Part.ATTACHMENT);
         multipart.addBodyPart(attachment);
 
+        var malformedAttachment = new MimeBodyPart();
+        malformedAttachment.setDataHandler(new DataHandler(new ByteArrayDataSource(new byte[]{4, 5, 6}, "application/pdf")));
+        malformedAttachment.setFileName("fehlerhaft.pdf");
+        malformedAttachment.setDisposition(Part.ATTACHMENT);
+        malformedAttachment.setHeader("Content-Type", "pdf/; name=\"fehlerhaft.pdf\"");
+        multipart.addBodyPart(malformedAttachment);
+
         message.setContent(multipart);
         message.saveChanges();
 
@@ -55,5 +62,6 @@ class MimeContentExtractorTest {
         assertThat(result.html()).doesNotContain("script", "https://tracker.example");
         assertThat(result.attachments()).extracting("filename").containsExactly("logo.png", "notiz.txt");
         assertThat(Files.readAllBytes(temporaryDirectory.resolve("mail_dateien/logo.png"))).containsExactly(1, 2, 3);
+        assertThat(temporaryDirectory.resolve("mail_dateien/fehlerhaft.pdf")).doesNotExist();
     }
 }

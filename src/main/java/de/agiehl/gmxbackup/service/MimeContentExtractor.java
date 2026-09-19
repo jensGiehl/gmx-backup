@@ -12,6 +12,8 @@ import jakarta.mail.internet.MimeUtility;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.safety.Safelist;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
@@ -30,10 +32,12 @@ import java.util.Set;
 @Component
 public class MimeContentExtractor {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(MimeContentExtractor.class);
+
     public ExtractedContent extract(Part message, Path assetsDirectory, Path outputRoot) throws MessagingException, IOException {
         Files.createDirectories(assetsDirectory);
         var state = new ExtractionState(assetsDirectory, outputRoot);
-        visit(message, state);
+        visitSafely(message, state);
         var rawBody = state.htmlBodies.isEmpty()
                 ? plainTextAsHtml(String.join("\n\n", state.plainBodies))
                 : String.join("<hr>", state.htmlBodies);
@@ -52,7 +56,7 @@ public class MimeContentExtractor {
         if (part.isMimeType("multipart/*")) {
             var multipart = (Multipart) part.getContent();
             for (var index = 0; index < multipart.getCount(); index++) {
-                visit(multipart.getBodyPart(index), state);
+                visitSafely(multipart.getBodyPart(index), state);
             }
             return;
         }
@@ -77,37 +81,49 @@ public class MimeContentExtractor {
     }
 
     private void saveEmbeddedMessage(Part part, String filename, ExtractionState state) throws MessagingException, IOException {
+        var contentType = parsedContentType(part);
         var target = uniqueTarget(state.assetsDirectory, StringUtils.hasText(filename) ? filename : "eingebettete-nachricht.eml", state.usedFilenames);
-        var content = part.getContent();
-        if (content instanceof Message message) {
-            try (var output = Files.newOutputStream(target)) {
-                message.writeTo(output);
+        try {
+            var content = part.getContent();
+            if (content instanceof Message message) {
+                try (var output = Files.newOutputStream(target)) {
+                    message.writeTo(output);
+                }
+            } else {
+                try (var input = part.getInputStream()) {
+                    Files.copy(input, target, StandardCopyOption.REPLACE_EXISTING);
+                }
             }
-        } else {
-            try (var input = part.getInputStream()) {
-                Files.copy(input, target, StandardCopyOption.REPLACE_EXISTING);
-            }
+            state.attachments.add(metadata(target, contentType, false, state.outputRoot));
+        } catch (MessagingException | IOException exception) {
+            Files.deleteIfExists(target);
+            throw exception;
         }
-        state.attachments.add(metadata(part, target, false, state.outputRoot));
     }
 
     private void saveBinaryPart(Part part, String filename, boolean inline, ExtractionState state) throws MessagingException, IOException {
+        var contentType = parsedContentType(part);
         var effectiveName = StringUtils.hasText(filename) ? filename : generatedFilename(part, state.attachments.size() + 1);
         var target = uniqueTarget(state.assetsDirectory, effectiveName, state.usedFilenames);
-        try (var input = part.getInputStream()) {
-            Files.copy(input, target, StandardCopyOption.REPLACE_EXISTING);
+        try {
+            try (var input = part.getInputStream()) {
+                Files.copy(input, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+            state.attachments.add(metadata(target, contentType, inline, state.outputRoot));
+            var relative = state.assetsDirectory.getFileName() + "/" + target.getFileName();
+            registerReference(firstHeader(part, "Content-ID"), relative, state.contentReferences);
+            registerReference(firstHeader(part, "Content-Location"), relative, state.contentReferences);
+        } catch (MessagingException | IOException exception) {
+            Files.deleteIfExists(target);
+            throw exception;
         }
-        state.attachments.add(metadata(part, target, inline, state.outputRoot));
-        var relative = state.assetsDirectory.getFileName() + "/" + target.getFileName();
-        registerReference(firstHeader(part, "Content-ID"), relative, state.contentReferences);
-        registerReference(firstHeader(part, "Content-Location"), relative, state.contentReferences);
     }
 
-    private AttachmentMetadata metadata(Part part, Path target, boolean inline, Path outputRoot) throws MessagingException, IOException {
+    private AttachmentMetadata metadata(Path target, String contentType, boolean inline, Path outputRoot) throws IOException {
         return new AttachmentMetadata(
                 target.getFileName().toString(),
                 ArchivePaths.portable(outputRoot, target),
-                new ContentType(part.getContentType()).getBaseType(),
+                contentType,
                 Files.size(target),
                 inline);
     }
@@ -146,7 +162,7 @@ public class MimeContentExtractor {
     }
 
     private String generatedFilename(Part part, int index) throws MessagingException {
-        var contentType = new ContentType(part.getContentType()).getBaseType().toLowerCase(Locale.ROOT);
+        var contentType = parsedContentType(part).toLowerCase(Locale.ROOT);
         var extension = switch (contentType) {
             case "image/jpeg" -> ".jpg";
             case "image/png" -> ".png";
@@ -187,6 +203,27 @@ public class MimeContentExtractor {
     private String firstHeader(Part part, String name) throws MessagingException {
         var headers = part.getHeader(name);
         return headers == null || headers.length == 0 ? null : headers[0];
+    }
+
+    private String parsedContentType(Part part) throws MessagingException {
+        return new ContentType(part.getContentType()).getBaseType();
+    }
+
+    private void visitSafely(Part part, ExtractionState state) {
+        try {
+            visit(part, state);
+        } catch (Exception exception) {
+            LOGGER.warn("Fehlerhafter MIME-Teil oder Anhang '{}' wird übersprungen: {}", filenameForLog(part), exception.getMessage());
+        }
+    }
+
+    private String filenameForLog(Part part) {
+        try {
+            var filename = decodeFilename(part.getFileName());
+            return StringUtils.hasText(filename) ? filename : part.getContentType();
+        } catch (Exception exception) {
+            return "unbekannt";
+        }
     }
 
     private void registerReference(String header, String path, Map<String, String> references) {

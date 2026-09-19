@@ -74,6 +74,8 @@ Nach erfolgreichem Abschluss kann `backup/index.html` im Browser geöffnet werde
 | `backup.batch-size` | `100` | Nachrichten pro Verarbeitungsblock |
 | `backup.connection-timeout` | `30s` | Zeitlimit für den Verbindungsaufbau |
 | `backup.read-timeout` | `60s` | Zeitlimit für IMAP-Lesevorgänge |
+| `backup.delete-all` | `false` | Löscht statt einer Sicherung sämtliche E-Mails endgültig |
+| `backup.delete-after-backup` | `false` | Löscht jede erfolgreich gesicherte E-Mail anschließend vom Server |
 
 Spring Boot akzeptiert die Werte sowohl als Kommandozeilenargumente als auch in der üblichen Umgebungsvariablen-Schreibweise, etwa `BACKUP_GMX_HOST`.
 
@@ -116,10 +118,48 @@ backup/
 - Aktive Inhalte wie Skripte, Formulare und eingebettete Frames werden aus der HTML-Ansicht entfernt.
 - Externe Bilder werden nicht automatisch geladen, damit Tracking-Pixel beim Lesen des Archivs nicht aufgerufen werden.
 - Die originale `.eml` bleibt zusätzlich erhalten und kann beispielsweise mit Thunderbird geöffnet werden.
+- Fehlerhafte MIME-Teile oder Anhänge werden protokolliert und übersprungen, ohne den gesamten Sicherungslauf abzubrechen. Die originale `.eml` enthält weiterhin die unveränderte Nachricht.
+- Fehler einer einzelnen E-Mail oder eines einzelnen Ordners werden protokolliert; danach wird mit dem nächsten Element fortgefahren.
 
 Ein erneuter Lauf überschreibt Dateien derselben IMAP-UID deterministisch, löscht aber keine bereits vorhandenen Sicherungsdateien. Damit entfernt eine serverseitig gelöschte Nachricht nicht automatisch ihre frühere lokale Kopie.
 
 Das Backup enthält vertrauliche Daten im Klartext. Das Zielverzeichnis sollte auf einem verschlüsselten Datenträger liegen und nur für den eigenen Benutzer lesbar sein.
+
+## Nach erfolgreicher Sicherung löschen
+
+Mit `--backup.delete-after-backup=true` wird jede E-Mail unmittelbar nach ihrer erfolgreichen lokalen Sicherung auf dem GMX-Server zum Löschen markiert. Nach Abschluss des jeweiligen Ordners werden die markierten Nachrichten endgültig entfernt.
+
+```cmd
+set "BACKUP_GMX_EMAIL=max.mustermann@gmx.de"
+set "BACKUP_GMX_PASSWORD=MEIN_PASSWORT"
+mvn spring-boot:run "-Dspring-boot.run.arguments=--backup.delete-after-backup=true"
+```
+
+Dabei gelten folgende Sicherheitsregeln:
+
+- Eine E-Mail wird nur gelöscht, wenn ihre `.eml`-Datei, HTML-Ansicht und Metadaten erfolgreich erzeugt wurden.
+- Kann eine E-Mail nicht gesichert werden, bleibt sie auf dem Server erhalten und der Lauf fährt mit der nächsten Nachricht fort.
+- Ein fehlerhafter einzelner Anhang wird in der HTML-Ansicht übersprungen. Da die unveränderte `.eml` bereits gesichert wurde und den ursprünglichen MIME-Inhalt enthält, gilt die E-Mail dennoch als vollständig archiviert.
+- Spam und „Gelöscht“ werden wie beim normalen Backup nicht verarbeitet und daher auch nicht gelöscht.
+- Kann ein Ordner nur lesend geöffnet werden, wird er gesichert, aber nicht gelöscht.
+
+`backup.delete-after-backup` und `backup.delete-all` dürfen nicht gleichzeitig aktiviert werden.
+
+## Optionaler Löschmodus
+
+Mit `--backup.delete-all=true` wechselt die Anwendung vom Sicherungs- in den Löschmodus. In diesem Modus wird **kein Backup erstellt**. Stattdessen werden alle E-Mails aus allen Ordnern einschließlich „Gesendet“, Spam und „Gelöscht“ über IMAP gelöscht und anschließend endgültig vom Server entfernt. Die Ordner selbst bleiben bestehen.
+
+> **Achtung:** Dieser Vorgang ist nicht rückgängig zu machen. Vor dem Aufruf sollte geprüft werden, dass ein vollständiges und lesbares Backup vorhanden ist.
+
+Aufruf mit Maven unter Windows `cmd.exe`:
+
+```cmd
+set "BACKUP_GMX_EMAIL=max.mustermann@gmx.de"
+set "BACKUP_GMX_PASSWORD=MEIN_PASSWORT"
+mvn spring-boot:run "-Dspring-boot.run.arguments=--backup.delete-all=true"
+```
+
+Alternativ kann auch `BACKUP_DELETE_ALL=true` als Umgebungsvariable gesetzt werden. Ohne die explizite Einstellung `true` arbeitet die Anwendung weiterhin ausschließlich im Sicherungsmodus.
 
 ## Bauen und testen
 
@@ -135,6 +175,61 @@ java -jar target/gmx-backup-1.0.0.jar \
   --backup.gmx.email=max.mustermann@gmx.de \
   --backup.gmx.password=MEIN_PASSWORT \
   --backup.output-directory=./backup
+```
+
+## Docker
+
+Bei jedem Push auf `main` oder `master` baut die GitHub Action `.github/workflows/docker-image.yml` ein Image für `linux/amd64` und `linux/arm64`. Nach erfolgreichen Tests wird es als `ghcr.io/jensgiehl/gmx-backup:latest` sowie mit einem Commit-SHA-Tag in die GitHub Container Registry veröffentlicht. Die Action verwendet das automatisch bereitgestellte `GITHUB_TOKEN`; zusätzliche Registry-Zugangsdaten sind nicht notwendig.
+
+Das folgende Beispiel entfernt zunächst einen eventuell vorhandenen Container und startet anschließend einen neuen Sicherungslauf:
+
+```bash
+docker rm -f gmx-backup 2>/dev/null
+
+docker run -d \
+  --name gmx-backup \
+  --pull=always \
+  -p 8089:8080 \
+  -e BACKUP_GMX_EMAIL=max.mustermann@gmx.de \
+  -e BACKUP_GMX_PASSWORD=MEIN_PASSWORT \
+  -e BACKUP_DELETE_AFTER_BACKUP=false \
+  -v gmx-backup-data:/app/backup \
+  ghcr.io/jensgiehl/gmx-backup:latest
+```
+
+`8089` ist dabei der Port auf dem Host, der auf Port `8080` im Container abgebildet wird. GMX Backup ist aktuell eine Batch-Anwendung und stellt keinen HTTP-Dienst bereit; die Portfreigabe ist daher reserviert und kann bei Bedarf weggelassen werden.
+
+Das Volume `gmx-backup-data` bindet das Ausgabeverzeichnis `/app/backup` dauerhaft ein. Dadurch bleiben `index.html`, `metadata.json`, E-Mails und Anhänge erhalten, nachdem der Container beendet oder ersetzt wurde.
+
+Der Container beendet sich nach dem Sicherungslauf automatisch. Deshalb wird absichtlich kein `--restart unless-stopped` verwendet: Eine Restart-Policy würde den Sicherungslauf fortlaufend wiederholen und wäre besonders zusammen mit `BACKUP_DELETE_AFTER_BACKUP=true` riskant.
+
+Fortschritt und Ergebnis lassen sich anzeigen mit:
+
+```bash
+docker logs -f gmx-backup
+```
+
+Das Archiv kann aus dem Volume in das aktuelle Verzeichnis kopiert werden:
+
+```bash
+docker cp gmx-backup:/app/backup ./backup
+```
+
+Für Passwörter mit Sonderzeichen ist eine Env-Datei empfehlenswert, damit die Shell den Wert nicht verändert und das Passwort nicht direkt in der Befehlszeile steht:
+
+```dotenv
+BACKUP_GMX_EMAIL=max.mustermann@gmx.de
+BACKUP_GMX_PASSWORD=MEIN_PASSWORT
+BACKUP_DELETE_AFTER_BACKUP=false
+```
+
+Die Datei kann beispielsweise als `gmx-backup.env` gespeichert und anschließend so verwendet werden:
+
+```bash
+docker run --rm \
+  --env-file gmx-backup.env \
+  -v gmx-backup-data:/app/backup \
+  ghcr.io/jensgiehl/gmx-backup:latest
 ```
 
 ## Verwendete Technik
