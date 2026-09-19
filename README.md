@@ -217,13 +217,35 @@ docker cp gmx-backup:/app/backup ./backup
 
 Für Passwörter mit Sonderzeichen ist eine Env-Datei empfehlenswert, damit die Shell den Wert nicht verändert und das Passwort nicht direkt in der Befehlszeile steht:
 
+### Passwörter mit `+` und `$` unter Linux
+
+Das Zeichen `+` muss in Bash und vergleichbaren Linux-Shells nicht maskiert werden. `$` leitet dagegen eine Variablenauflösung ein. Bei direkter Übergabe muss deshalb der vollständige Docker-Parameter in **einfache Anführungszeichen** gesetzt werden:
+
+```bash
+docker run --rm \
+  -e 'BACKUP_GMX_EMAIL=max.mustermann@gmx.de' \
+  -e 'BACKUP_GMX_PASSWORD=mein+pass$wort' \
+  -v gmx-backup-data:/app/backup \
+  ghcr.io/jensgiehl/gmx-backup:latest
+```
+
+Innerhalb einfacher Anführungszeichen behandelt die Shell sowohl `+` als auch `$` als normale Zeichen. Das Passwort ist bei dieser Variante allerdings möglicherweise über die Prozessliste oder Shell-Historie sichtbar.
+
+Empfohlen wird deshalb eine Env-Datei. In dieser werden `+` und `$` unverändert und ohne Anführungszeichen eingetragen:
+
 ```dotenv
 BACKUP_GMX_EMAIL=max.mustermann@gmx.de
-BACKUP_GMX_PASSWORD=MEIN_PASSWORT
+BACKUP_GMX_PASSWORD=mein+pass$wort
 BACKUP_DELETE_AFTER_BACKUP=false
 ```
 
-Die Datei kann beispielsweise als `gmx-backup.env` gespeichert und anschließend so verwendet werden:
+Die Datei kann beispielsweise als `gmx-backup.env` gespeichert werden. Unter Linux sollten die Zugriffsrechte vor dem Start eingeschränkt werden:
+
+```bash
+chmod 600 gmx-backup.env
+```
+
+Anschließend wird sie so verwendet:
 
 ```bash
 docker run --rm \
